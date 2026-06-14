@@ -41,7 +41,13 @@ generalised beyond GNOME to also cover XFCE, KDE Plasma, and several window mana
 
    The choice is made deterministic by writing `/etc/X11/default-display-manager`
    and running `dpkg-reconfigure -f noninteractive`.
-5. **Switches to graphical boot** (`systemctl set-default graphical.target`) and
+5. **Installs an Xorg `vc4` driver config** (`/usr/share/X11/xorg.conf.d/99-vc4.conf`)
+   forcing the `modesetting` driver on the Pi's VideoCore GPU. The lean DE/WM
+   metapackages don't ship the Raspberry Pi desktop's Xorg config, so without this
+   X falls back to the legacy `fbdev` driver and fails to start with
+   *"Cannot run in framebuffer mode"* (black screen / crash-looping display manager).
+   Harmless for Wayland-only setups.
+6. **Switches to graphical boot** (`systemctl set-default graphical.target`) and
    offers to reboot.
 
 Every `apt` step is shown behind a live **whiptail progress gauge** (driven by

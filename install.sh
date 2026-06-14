@@ -374,7 +374,31 @@ install_display_manager() {
 }
 
 # ----------------------------------------------------------------------------
-# 5. Graphical boot
+# 5. Xorg driver fix for Pi VideoCore (vc4) KMS
+# ----------------------------------------------------------------------------
+# The lean DE/WM metapackages don't ship the Raspberry Pi desktop's Xorg config,
+# so X auto-selects the legacy fbdev driver and dies with
+#   "Cannot run in framebuffer mode. Please specify busIDs ..."
+# This OutputClass forces the modesetting driver on the vc4 GPU. It only affects
+# Xorg sessions, so it is harmless for Wayland-only setups (GNOME/Sway).
+ensure_vc4_xorg_config() {
+    local dir="/usr/share/X11/xorg.conf.d"
+    local file="${dir}/99-vc4.conf"
+    [[ -f "$file" ]] && { log "Xorg vc4 config already present"; return 0; }
+    mkdir -p "$dir"
+    cat >"$file" <<'EOF'
+Section "OutputClass"
+    Identifier "vc4"
+    MatchDriver "vc4"
+    Driver "modesetting"
+    Option "PrimaryGPU" "true"
+EndSection
+EOF
+    log "Wrote $file (forces modesetting driver on vc4 KMS)"
+}
+
+# ----------------------------------------------------------------------------
+# 6. Graphical boot
 # ----------------------------------------------------------------------------
 enable_graphical_boot() {
     log "Setting default systemd target to graphical"
@@ -382,7 +406,7 @@ enable_graphical_boot() {
 }
 
 # ----------------------------------------------------------------------------
-# 6. Finish
+# 7. Finish
 # ----------------------------------------------------------------------------
 finish() {
     local msg
@@ -422,6 +446,7 @@ main() {
     install_desktops
     pick_display_manager
     install_display_manager
+    ensure_vc4_xorg_config
     enable_graphical_boot
     finish
 }
