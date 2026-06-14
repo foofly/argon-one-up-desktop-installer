@@ -44,6 +44,12 @@ generalised beyond GNOME to also cover XFCE, KDE Plasma, and several window mana
 5. **Switches to graphical boot** (`systemctl set-default graphical.target`) and
    offers to reboot.
 
+Every `apt` step is shown behind a live **whiptail progress gauge** (driven by
+apt's `APT::Status-Fd` output: download maps to 0–50%, install/configure to
+50–100%), with a step counter (e.g. "Installing KDE Plasma (2 of 3)"). Long
+non-apt steps (the Argon support script, display-manager configuration) show an
+info box. Full apt output still streams to the log file.
+
 All selected desktops/WMs coexist. At the login screen, use the session menu to
 choose which one to start.
 

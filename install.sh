@@ -54,9 +54,50 @@ run() {
     fi
 }
 
-apt_install() {
-    # apt_install [extra apt-get flags before --] pkg...
-    run apt-get install -y "$@"
+# Parse apt's machine-readable progress (APT::Status-Fd) into whiptail --gauge
+# update blocks. Download phase maps to 0-50%, install/configure phase to 50-100%.
+parse_apt_status() {
+    local msg="$1"
+    local kind pkg pct desc ipct
+    printf 'XXX\n0\n%s\nPreparing...\nXXX\n' "$msg"
+    while IFS=: read -r kind pkg pct desc; do
+        [[ "$pct" =~ ^[0-9] ]] || continue
+        case "$kind" in
+            dlstatus) ipct=$(( ${pct%%.*} / 2 )) ;;
+            pmstatus) ipct=$(( 50 + ${pct%%.*} / 2 )) ;;
+            *) continue ;;
+        esac
+        (( ipct < 0 ))   && ipct=0
+        (( ipct > 100 )) && ipct=100
+        printf 'XXX\n%d\n%s\n%s\nXXX\n' "$ipct" "$msg" "${desc:-working...}"
+    done
+    printf 'XXX\n100\n%s\nDone.\nXXX\n' "$msg"
+}
+
+# Run an apt-get operation behind a whiptail progress gauge.
+# Usage: apt_gauge "Title shown in the gauge" <apt-get subcommand and args...>
+# `-y` and the Status-Fd options are added automatically.
+apt_gauge() {
+    local msg="$1"; shift
+    log "RUN(gauge): apt-get $* -y"
+    local rc_file
+    rc_file="$(mktemp)"
+    set +e
+    (
+        apt-get "$@" -y -o APT::Status-Fd=3 -o Dpkg::Use-Pty=0 \
+            3>&1 1>>"$LOGFILE" 2>&1
+        echo "$?" >"$rc_file"
+    ) | parse_apt_status "$msg" | whiptail --gauge "$msg" 8 72 0
+    set -e
+    local rc
+    rc="$(cat "$rc_file" 2>/dev/null || echo 1)"
+    rm -f "$rc_file"
+    [[ "$rc" == "0" ]] || die "apt-get $* failed (exit $rc). See $LOGFILE."
+}
+
+# Show a non-blocking message while a long, non-apt step runs.
+infobox() {
+    whiptail --title "$1" --infobox "$2" 9 72
 }
 
 require_root() {
@@ -90,7 +131,7 @@ preflight() {
     fi
 
     log "Running apt-get update..."
-    run apt-get update
+    apt_gauge "Updating package lists" update
 }
 
 # ----------------------------------------------------------------------------
@@ -162,6 +203,7 @@ hardware_setup() {
     if whiptail --title "Argon ONE UP support script" \
         --yesno "Run the official Argon ONE UP setup script?\n\n  curl ${ARGON_SCRIPT_URL} | bash\n\nThis installs Argon's hardware support (fan/power/battery helpers). It is downloaded from the internet and run as root." 15 74; then
         log "Running Argon vendor script from $ARGON_SCRIPT_URL"
+        infobox "Argon ONE UP support script" "Downloading and running the Argon support script...\n\nThis may take a few minutes."
         if curl -fsSL "$ARGON_SCRIPT_URL" | bash >>"$LOGFILE" 2>&1; then
             log "Argon vendor script completed"
         else
@@ -181,8 +223,8 @@ base_upgrade() {
     if whiptail --title "System upgrade" \
         --yesno "Run a full system upgrade now?\n\n  apt-get full-upgrade\n  apt-get autoremove\n\nRecommended on a fresh image, but can be skipped if you just upgraded." 13 72; then
         log "--- Base upgrade ---"
-        run apt-get full-upgrade -y
-        run apt-get autoremove -y
+        apt_gauge "Upgrading system (full-upgrade)" full-upgrade
+        apt_gauge "Removing unused packages" autoremove
     else
         log "Base upgrade skipped by user"
     fi
@@ -228,44 +270,47 @@ contains() {
 
 install_desktops() {
     log "--- Installing desktops / window managers ---"
-    local tag
+    local tag total idx
+    total=${#SELECTED[@]}
+    idx=0
     for tag in "${SELECTED[@]}"; do
+        idx=$((idx + 1))
         case "$tag" in
             xfce)
                 log "Installing XFCE"
-                apt_install xfce4 xfce4-goodies
+                apt_gauge "Installing XFCE ($idx of $total)" install xfce4 xfce4-goodies
                 INSTALLED_SUMMARY+=$'\n  - XFCE (xfce4, xfce4-goodies)'
                 ;;
             kde)
                 log "Installing KDE Plasma"
-                apt_install kde-plasma-desktop
+                apt_gauge "Installing KDE Plasma ($idx of $total)" install kde-plasma-desktop
                 INSTALLED_SUMMARY+=$'\n  - KDE Plasma (kde-plasma-desktop)'
                 ;;
             gnome)
                 log "Installing GNOME core"
-                apt_install gnome-core
+                apt_gauge "Installing GNOME ($idx of $total)" install gnome-core
                 INSTALLED_SUMMARY+=$'\n  - GNOME (gnome-core)'
                 install_gnome_extras
                 ;;
             i3)
                 log "Installing i3"
-                apt_install i3
+                apt_gauge "Installing i3 ($idx of $total)" install i3
                 INSTALLED_SUMMARY+=$'\n  - i3 (i3 + dmenu/i3status/i3lock)'
                 ;;
             sway)
                 log "Installing Sway"
                 # Recommends aren't pulled, so add terminal + launcher explicitly.
-                apt_install --no-install-recommends sway swaybg foot wmenu
+                apt_gauge "Installing Sway ($idx of $total)" install --no-install-recommends sway swaybg foot wmenu
                 INSTALLED_SUMMARY+=$'\n  - Sway (sway, swaybg, foot, wmenu)'
                 ;;
             lxqt)
                 log "Installing LXQt"
-                apt_install lxqt-core
+                apt_gauge "Installing LXQt ($idx of $total)" install lxqt-core
                 INSTALLED_SUMMARY+=$'\n  - LXQt (lxqt-core)'
                 ;;
             lxde)
                 log "Installing LXDE"
-                apt_install lxde-core
+                apt_gauge "Installing LXDE ($idx of $total)" install lxde-core
                 INSTALLED_SUMMARY+=$'\n  - LXDE (lxde-core)'
                 ;;
             *)
@@ -279,8 +324,8 @@ install_gnome_extras() {
     if whiptail --title "GNOME extras" \
         --yesno "Install the optional GNOME extras from the Argon guide?\n\n  gnome-tweaks, gnome-shell-extensions, dconf-editor,\n  flatpak, fonts-ubuntu, gir1.2-gnomedesktop-3.0\n\n(gir1.2-gnomedesktop-3.0 is needed by some shell extensions such as ArcMenu.)" 15 76; then
         log "Installing GNOME extras"
-        apt_install gnome-tweaks gnome-shell-extensions dconf-editor \
-            flatpak fonts-ubuntu gir1.2-gnomedesktop-3.0
+        apt_gauge "Installing GNOME extras" install gnome-tweaks gnome-shell-extensions \
+            dconf-editor flatpak fonts-ubuntu gir1.2-gnomedesktop-3.0
         INSTALLED_SUMMARY+=$'\n      (+ GNOME extras)'
     else
         log "GNOME extras skipped by user"
@@ -313,15 +358,16 @@ install_display_manager() {
     echo "${DM} shared/default-x-display-manager select ${DM}" | debconf-set-selections
 
     case "$DM" in
-        lightdm) apt_install lightdm lightdm-gtk-greeter ;;
-        sddm)    apt_install sddm ;;
-        gdm3)    apt_install gdm3 ;;
+        lightdm) apt_gauge "Installing display manager (lightdm)" install lightdm lightdm-gtk-greeter ;;
+        sddm)    apt_gauge "Installing display manager (sddm)" install sddm ;;
+        gdm3)    apt_gauge "Installing display manager (gdm3)" install gdm3 ;;
     esac
 
     # Make the choice deterministic: the debconf pre-seed is often ignored because
     # each DM postinst recomputes the default, so write the authoritative file too.
     echo "/usr/sbin/${DM}" >/etc/X11/default-display-manager
     log "Wrote /etc/X11/default-display-manager -> /usr/sbin/${DM}"
+    infobox "Display manager" "Configuring ${DM} as the default login screen..."
     run dpkg-reconfigure -f noninteractive "$DM"
 
     run systemctl enable "${DM}.service"
